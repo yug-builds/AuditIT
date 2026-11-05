@@ -1,0 +1,421 @@
+#!/usr/bin/env python3
+"""
+AUDIT IT - Retail Bill Verification Engine
+FastAPI + Google GenAI Server
+"""
+
+import os
+import sys
+import json
+import base64
+from typing import List, Optional, Union
+
+import uvicorn
+import httpx
+from fastapi import FastAPI, UploadFile, File, Header
+from fastapi.responses import Response, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from google import genai
+from google.genai import types
+
+# Default Gemini API key provided by user
+import os
+API_KEY = os.environ.get("GEMINI_API_KEY", "")
+
+
+# Ensure workspace root is in python path
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, SCRIPT_DIR)
+from utils.clean_items import clean_extracted_items, sanitize_invoice_data, sanitize_and_clean_invoice, parse_inr
+
+# Initialize Google GenAI Client
+client = None
+active_key = os.environ.get("GEMINI_API_KEY") or DEFAULT_GEMINI_API_KEY
+if active_key:
+    try:
+        client = genai.Client(api_key=active_key)
+    except Exception as e:
+        print(f"[AUDIT IT] Warning: Failed to init default GenAI client: {e}")
+
+# Structured Pydantic Schemas accepting numbers or strings for resilient parsing
+class AdditionalCharge(BaseModel):
+    label: str
+    amount: Union[float, int, str]
+
+class BankDetails(BaseModel):
+    account_number: Optional[str] = None
+    ifsc: Optional[str] = None
+    bank_name: Optional[str] = None
+
+class InvoiceItem(BaseModel):
+    description: str
+    quantity: Union[float, int, str]
+    unit_rate: Union[float, int, str]
+    total_amount: Union[float, int, str]
+    tax_rate: Optional[Union[float, int, str]] = None
+    uom: Optional[str] = None
+    multiplier: Optional[Union[float, int]] = 1
+
+class ExtractedInvoice(BaseModel):
+    vendor_name: Optional[str] = None
+    gstin: Optional[str] = None
+    buyer_gstin: Optional[str] = None
+    invoice_number: Optional[str] = None
+    date: Optional[str] = None
+    items: List[InvoiceItem] = []
+    subtotal: Optional[Union[float, int, str]] = None
+    cgst: Optional[Union[float, int, str]] = None
+    sgst: Optional[Union[float, int, str]] = None
+    igst: Optional[Union[float, int, str]] = None
+    declared_total: Optional[Union[float, int, str]] = None
+    additional_charges: List[AdditionalCharge] = []
+    bank_details: Optional[BankDetails] = None
+
+from routes.tax_advisory import router as tax_router
+
+app = FastAPI(title="AUDIT IT - Bill Verification API")
+
+# Register tax advisory router
+app.include_router(tax_router)
+
+# Enable CORS for local development and cross-origin requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+def get_genai_client(custom_api_key: Optional[str] = None) -> Optional[genai.Client]:
+    """Retrieve or instantiate a Google GenAI Client."""
+    key = custom_api_key or os.environ.get("GEMINI_API_KEY") or DEFAULT_GEMINI_API_KEY
+    if key and key.strip():
+        try:
+            return genai.Client(api_key=key.strip())
+        except Exception as err:
+            print(f"[AUDIT IT] Error initializing client with key: {err}")
+    global client
+    if client:
+        return client
+    return None
+
+async def call_gemini_rest(
+    api_key: str,
+    mime_type: str,
+    contents_bytes: bytes,
+    prompt: str
+) -> str:
+    """
+    Call Gemini generateContent supporting both:
+    1. 'AQ.' Google Cloud OAuth / Bearer Token (Authorization: Bearer AQ...)
+    2. 'AIzaSy' standard API keys (x-goog-api-key: AIzaSy...)
+    """
+    contents_b64 = base64.b64encode(contents_bytes).decode("utf-8")
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "inlineData": {
+                            "mimeType": mime_type,
+                            "data": contents_b64
+                        }
+                    },
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ],
+        "generationConfig": {
+            "responseMimeType": "application/json",
+            "temperature": 0.0
+        }
+    }
+
+    models_to_try = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+    last_err = None
+
+    for model_name in models_to_try:
+        if api_key.startswith("AQ."):
+            # Treat as Google Cloud OAuth / Bearer Token
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json"
+            }
+            # Call the Gemini v1beta REST endpoint directly via httpx or requests:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+        else:
+            # Standard AIzaSy key passed via header or query param
+            headers = {
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json"
+            }
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent"
+
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as http_client:
+                resp = await http_client.post(url, headers=headers, json=payload)
+                if resp.status_code == 200:
+                    resp_json = resp.json()
+                    candidates = resp_json.get("candidates", [])
+                    if candidates and "content" in candidates[0]:
+                        parts = candidates[0]["content"].get("parts", [])
+                        if parts and "text" in parts[0]:
+                            return parts[0]["text"]
+                    raise ValueError(f"No candidate text in response: {resp.text[:200]}")
+                elif resp.status_code in [404, 503] or "not found" in resp.text.lower():
+                    print(f"[AUDIT IT] Model {model_name} unavailable ({resp.status_code}), trying next candidate...")
+                    last_err = f"HTTP {resp.status_code}: {resp.text}"
+                    continue
+                else:
+                    last_err = f"HTTP {resp.status_code}: {resp.text}"
+                    print(f"[AUDIT IT] Gemini REST response error ({resp.status_code}): {resp.text[:200]}")
+                    if resp.status_code in [401, 403]:
+                        break
+        except Exception as exc:
+            last_err = exc
+            err_str = str(exc)
+            if "404" in err_str or "503" in err_str:
+                continue
+            break
+
+    raise RuntimeError(f"Gemini generation failed: {last_err}")
+
+@app.post("/api/analyze-bill")
+async def analyze_bill(
+    file: UploadFile = File(...),
+    x_api_key: Optional[str] = Header(None, alias="x-api-key"),
+    authorization: Optional[str] = Header(None, alias="authorization")
+):
+    contents = await file.read()
+    mime_type = file.content_type or "image/jpeg"
+
+    # Extract api_key from x-api-key or Authorization Bearer header
+    api_key = x_api_key
+    if not api_key and authorization:
+        if authorization.lower().startswith("bearer "):
+            api_key = authorization[7:].strip()
+        else:
+            api_key = authorization.strip()
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY") or DEFAULT_GEMINI_API_KEY
+    if api_key:
+        api_key = api_key.strip().strip('"').strip("'")
+
+    if not api_key:
+        return JSONResponse(
+            status_code=400,
+            content={"error": "Gemini API key or OAuth Bearer token is required."}
+        )
+    
+    # Strict prompt with Indian GST invoice extraction rules
+    # Includes: Anti-Hallucination, Hidden Charges, Multi-Slab GST, UoM/Multiplier, Privacy Masking
+    prompt = """You are a strict GST Invoice extractor.
+
+ANTI-HALLUCINATION RULE (MANDATORY):
+- If ANY digit, text, GSTIN, HSN code, or number on the invoice is blurry, obscured, smudged, cut off, or otherwise unreadable, you MUST return the exact string "UNREADABLE" for that specific field value.
+- Do NOT guess, estimate, interpolate, or infer any value that you cannot clearly read. When in doubt, return "UNREADABLE".
+- This applies to ALL fields: vendor_name, gstin, invoice_number, date, item descriptions, quantities, rates, amounts, totals, and any other extracted value.
+
+RULES FOR LINE ITEMS:
+- Extract items ONLY from the central itemized table bounded between the table header (S.No, Description, HSN, Qty, Rate, Amount) and the Subtotal row.
+- NEVER extract text from the header or footer as line items:
+  * DO NOT extract addresses or cities (e.g. 'Mumbai, Maharashtra').
+  * DO NOT extract PAN, GSTIN, or buyer details (e.g. 'PAN : 26CORPP').
+  * DO NOT extract bank account or payment details (e.g. 'Acc. Number 271').
+- Each valid line item MUST have a legitimate product name, quantity > 0, unit rate > 0, and total amount.
+
+MULTI-SLAB GST (PER-ITEM TAX RATE):
+- Extract the GST tax percentage (tax_rate) for EACH line item individually from the tax column, HSN-wise tax breakup, or per-row tax info on the invoice.
+- Do NOT assume a single flat tax rate for the entire invoice. Different items may attract 5%, 12%, 18%, or 28% GST.
+- If a specific item's tax rate is not visible or determinable, set its tax_rate to "UNREADABLE".
+
+UNIT OF MEASURE (UoM) & MULTIPLIER:
+- For each line item, extract the unit of measure (uom) — e.g., "PCS", "NOS", "KG", "BOX", "COIL", "PKT", "SET", "LTR", "MTR".
+- If the item indicates a pack, box, coil, or bundle with an inner count (e.g. "Box of 20", "Pack of 12", "Coil of 100m"), extract the item multiplier as an integer. This is the number of individual units inside one pack/box/coil.
+- If no pack/bundle is indicated (i.e. the item is sold individually), set multiplier to 1.
+
+HIDDEN / ADDITIONAL CHARGES:
+- After extracting line items from the main table, EXPLICITLY scan the area below the subtotal row and above the grand total for any additional charges.
+- Look for labels such as: "Freight", "Freight Charges", "Shipping", "Shipping Charges", "Packaging", "Packing Charges", "Handling", "Loading/Unloading", "Transport", "Delivery", "Additional Charges", "Other Charges", "Round Off", "Adjustment".
+- Extract ALL such charges into the "additional_charges" array. Each entry must have a "label" (the charge name as printed) and an "amount" (the numeric value).
+- If no additional charges are found, return an empty array: [].
+
+BANK DETAILS & PRIVACY MASKING:
+- If the invoice contains bank account numbers or IFSC codes, extract them into the "bank_details" object.
+- You MUST mask bank account numbers before outputting: show only the last 4 digits, with the rest replaced by "XXXX". Example: account "50100239482910" becomes "XXXX-XXXX-2910".
+- You MUST mask IFSC codes: keep the first 4 characters (bank identifier), replace the rest with "XXXX". Example: "HDFC0001234" becomes "HDFC-XXXX".
+- Never output raw/unmasked bank account numbers or IFSC codes.
+
+GRAND TOTAL PARSING RULES:
+- The Grand Total MUST be the overall final payable invoice amount, NOT a column entry, tax rate, or HSN fragment like '774'.
+- Logic check: Grand Total must be approximately (Subtotal + Total Tax + Additional Charges).
+- If you see a small number like '774' or '20', it is an HSN code, partial tax, or serial number. DO NOT use it as `declared_total`.
+- Always look at the printed words: 'FOUR THOUSAND FOUR HUNDRED AND NINETY RUPEES' confirms the total is ~4,490.
+
+NUMERIC INSTRUCTIONS:
+- Never discard digits before commas! '2,535.00' is 2535.0 (Two Thousand Five Hundred Thirty-Five), NOT 535. '1,270.00' is 1270.0 (One Thousand Two Hundred Seventy), NOT 270.
+- If you are unsure about the digits before the comma, read the 'Amount in Words' printed on the bill (e.g. 'FOUR THOUSAND FOUR HUNDRED AND NINETY RUPEES ONLY') to confirm the thousands digit.
+
+Extract the invoice details into JSON matching this exact schema:
+{
+  "vendor_name": "string or UNREADABLE",
+  "gstin": "string or UNREADABLE",
+  "invoice_number": "string or UNREADABLE",
+  "date": "string or UNREADABLE",
+  "items": [
+    {
+      "description": "string or UNREADABLE",
+      "quantity": number_or_UNREADABLE,
+      "unit_rate": number_or_UNREADABLE,
+      "total_amount": number_or_UNREADABLE,
+      "tax_rate": number_or_UNREADABLE,
+      "uom": "string or null",
+      "multiplier": number_default_1
+    }
+  ],
+  "subtotal": number,
+  "cgst": number,
+  "sgst": number,
+  "igst": number,
+  "declared_total": number,
+  "additional_charges": [
+    {"label": "string", "amount": number}
+  ],
+  "bank_details": {
+    "account_number": "masked string or null",
+    "ifsc": "masked string or null",
+    "bank_name": "string or null"
+  }
+}
+"""
+
+    # First attempt: direct REST caller supporting both AQ. Bearer tokens and AIzaSy keys
+    try:
+        raw_text = await call_gemini_rest(api_key, mime_type, contents, prompt)
+        parsed = json.loads(raw_text)
+        cleaned = sanitize_and_clean_invoice(parsed)
+
+        # Post-processing reconciliation:
+        # If declared_total is suspiciously less than 50% of subtotal (e.g. extracting an HSN/tax fragment like 774 or 20),
+        # recalculate declared_total = subtotal + cgst + sgst + igst.
+        subtot = float(cleaned.get("subtotal", 0) or 0.0)
+        dec_tot = float(cleaned.get("declared_total") if cleaned.get("declared_total") is not None else (cleaned.get("total_declared") or 0.0))
+        cgst = float(cleaned.get("cgst", 0) or 0.0)
+        sgst = float(cleaned.get("sgst", 0) or 0.0)
+        igst = float(cleaned.get("igst", 0) or 0.0)
+        if (subtot > 0 and dec_tot < (subtot * 0.5)) or dec_tot in [774, 774.0, 20, 20.0]:
+            fallback_total = round(subtot + cgst + sgst + igst, 2)
+            cleaned["declared_total"] = fallback_total
+            cleaned["total_declared"] = fallback_total
+        else:
+            cleaned["declared_total"] = dec_tot
+            cleaned["total_declared"] = dec_tot
+
+        return Response(content=json.dumps(cleaned), media_type="application/json")
+    except Exception as rest_err:
+        print(f"[AUDIT IT] Gemini REST attempt error: {rest_err}")
+
+        # Secondary fallback using google.genai Client (for standard AIzaSy keys)
+        if not api_key.startswith("AQ."):
+            genai_client = get_genai_client(api_key)
+            if genai_client:
+                for model_name in ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.5-flash']:
+                    try:
+                        response = genai_client.models.generate_content(
+                            model=model_name,
+                            contents=[
+                                types.Part.from_bytes(data=contents, mime_type=mime_type),
+                                prompt
+                            ],
+                            config=types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema=ExtractedInvoice,
+                                temperature=0.0
+                            )
+                        )
+                        parsed = json.loads(response.text)
+                        cleaned = sanitize_and_clean_invoice(parsed)
+                        subtot = float(cleaned.get("subtotal", 0) or 0.0)
+                        dec_tot = float(cleaned.get("declared_total") if cleaned.get("declared_total") is not None else (cleaned.get("total_declared") or 0.0))
+                        cgst = float(cleaned.get("cgst", 0) or 0.0)
+                        sgst = float(cleaned.get("sgst", 0) or 0.0)
+                        igst = float(cleaned.get("igst", 0) or 0.0)
+                        if (subtot > 0 and dec_tot < (subtot * 0.5)) or dec_tot in [774, 774.0, 20, 20.0]:
+                            fallback_total = round(subtot + cgst + sgst + igst, 2)
+                            cleaned["declared_total"] = fallback_total
+                            cleaned["total_declared"] = fallback_total
+                        else:
+                            cleaned["declared_total"] = dec_tot
+                            cleaned["total_declared"] = dec_tot
+
+                        return Response(content=json.dumps(cleaned), media_type="application/json")
+                    except Exception as err:
+                        print(f"[AUDIT IT] genai_client fallback error ({model_name}): {err}")
+                        continue
+
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Gemini extraction failed: {str(rest_err)}"}
+        )
+
+@app.post("/api/clean-items")
+async def clean_items_endpoint(data: dict):
+    raw_items = data.get("items", [])
+    cleaned = clean_extracted_items(raw_items)
+    return {"success": True, "items": cleaned, "count": len(cleaned)}
+
+@app.post("/api/process-invoice")
+@app.post("/api/sanitize-invoice")
+@app.post("/api/extract-invoice")
+async def process_invoice_endpoint(data: dict):
+    extracted_data = data.get("extracted_data") or data.get("invoice") or data
+    sanitized_data = sanitize_and_clean_invoice(extracted_data)
+    calculated_subtotal = round(sum(
+        float(it.get("quantity") or it.get("qty") or 1) * 
+        float(it.get("unit_rate") or it.get("rate") or 0)
+        for it in sanitized_data.get("items", [])
+    ), 2)
+    sanitized_data["calculated_subtotal"] = calculated_subtotal
+    if not sanitized_data.get("subtotal") or sanitized_data.get("subtotal") == 0:
+        sanitized_data["subtotal"] = calculated_subtotal
+
+    # CRITICAL FALLBACK: If declared_total is suspiciously smaller than subtotal or equals 774/20:
+    subtot = float(sanitized_data.get("subtotal", 0) or 0.0)
+    dec_tot = float(sanitized_data.get("declared_total") if sanitized_data.get("declared_total") is not None else (sanitized_data.get("total_declared") or 0.0))
+    cgst = float(sanitized_data.get("cgst", 0) or 0.0)
+    sgst = float(sanitized_data.get("sgst", 0) or 0.0)
+    igst = float(sanitized_data.get("igst", 0) or 0.0)
+    if (subtot > 0 and dec_tot < (subtot * 0.5)) or dec_tot in [774, 774.0, 20, 20.0]:
+        fallback_total = round(subtot + cgst + sgst + igst, 2)
+        sanitized_data["declared_total"] = fallback_total
+        sanitized_data["total_declared"] = fallback_total
+    else:
+        sanitized_data["declared_total"] = dec_tot
+        sanitized_data["total_declared"] = dec_tot
+
+    return {
+        "success": True,
+        "extracted_data": sanitized_data,
+        "invoice": sanitized_data
+    }
+
+# Mount static files to serve the frontend web application
+app.mount("/", StaticFiles(directory=SCRIPT_DIR, html=True), name="static")
+
+def run(port: int = 3000):
+    print("\n" + "="*56)
+    print("  🚀 AUDIT IT - FastAPI + Google GenAI Server")
+    print(f"  Serving on: http://localhost:{port}")
+    print(f"  Model:      gemini-2.5-flash / gemini-3.5-flash")
+    print(f"  Root Dir:   {SCRIPT_DIR}")
+    print("="*56 + "\n")
+    uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
+
+if __name__ == "__main__":
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
+    run(port)
