@@ -1,11 +1,11 @@
-// Gemini 2.5 Flash Tax Suggestions Generator for AUDIT IT
+// Gemini 3.1 Pro Tax Suggestions Generator for AUDIT IT
 import { formatRupees } from "./auditEngine.js";
 
 const apiKey = process.env.GEMINI_API_KEY || "";
 
 
 /**
- * Calls Gemini 2.5 Flash to generate tax and ITR suggestions for small retail shopkeepers.
+ * Calls Gemini 3.1 Pro to generate tax and ITR suggestions for small retail shopkeepers.
  * 
  * @param {Object} audit_summary - Financial context (turnover, invoices, GST, missing GSTINs)
  * @param {Object} calculated_tax - Code-calculated tax liability & deemed profit under Sec 44AD
@@ -56,8 +56,9 @@ Tone: Grounded, simple English, no complex jargon. Include a clear disclaimer: '
     try {
       const isBearer = effectiveKey.trim().startsWith("AQ.");
       const url = isBearer
-        ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-        : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${effectiveKey.trim()}`;
+        ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent"
+        : `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=${effectiveKey.trim()}`;
+
 
       const headers = {
         "Content-Type": "application/json"
@@ -93,10 +94,10 @@ Tone: Grounded, simple English, no complex jargon. Include a clear disclaimer: '
           return parseAiResponse(content);
         }
       } else {
-        console.warn(`Gemini 2.5 Flash API returned status ${res.status}; using local generator.`);
+        console.warn(`Gemini 3.1 Pro API returned status ${res.status}; using local generator.`);
       }
     } catch (e) {
-      console.warn("Gemini 2.5 Flash fetch error; using local generator:", e);
+      console.warn("Gemini 3.1 Pro fetch error; using local generator:", e);
     }
   }
 

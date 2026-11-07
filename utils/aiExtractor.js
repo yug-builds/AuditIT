@@ -10,6 +10,9 @@ const apiKey = process.env.GEMINI_API_KEY || "";
 
 const GEMINI_SYSTEM_INSTRUCTION = `You are a strict GST Invoice extractor. 
 
+STRICT DOCUMENT GROUNDING (MANDATORY):
+Base your answers EXCLUSIVELY and strictly on the uploaded documents. If any digit, text, or data is missing, illegible, or uncertain, state that it cannot be found or return "UNREADABLE". Do NOT infer, estimate, or hallucinate any financial details not present in the text.
+
 ANTI-HALLUCINATION RULE (MANDATORY):
 - If ANY digit, text, GSTIN, HSN code, or number on the invoice is blurry, obscured, smudged, cut off, or otherwise unreadable, you MUST return the exact string "UNREADABLE" for that specific field value.
 - Do NOT guess, estimate, interpolate, or infer any value that you cannot clearly read. When in doubt, return "UNREADABLE".
@@ -107,7 +110,7 @@ export async function extractInvoiceFromDocument(file, apiKey = null, onProgress
 
   // 1. Prioritize FastAPI + Google GenAI (/api/analyze-bill) backend endpoint
   try {
-    if (onProgress) onProgress("Uploading bill to FastAPI backend (Gemini 2.5 Flash)...");
+    if (onProgress) onProgress("Uploading bill to FastAPI backend (Gemini 3.1 Pro)...");
     const formData = new FormData();
     formData.append("file", file);
 
@@ -184,8 +187,9 @@ export async function extractInvoiceFromDocument(file, apiKey = null, onProgress
     try {
       const isBearer = effectiveKey.trim().startsWith("AQ.");
       const url = isBearer
-        ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-        : `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${effectiveKey.trim()}`;
+        ? "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent"
+        : `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent?key=${effectiveKey.trim()}`;
+
 
       const headers = {
         "Content-Type": "application/json"

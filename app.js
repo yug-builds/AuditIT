@@ -459,7 +459,7 @@ class AuditItApp {
       this.render();
       window.scrollTo({ top: 0, behavior: "smooth" });
 
-      this.showToast("Invoice analyzed by Gemini 2.5 Flash successfully!", "success");
+      this.showToast("Invoice analyzed by Gemini 3.1 Pro successfully!", "success");
     } catch (err) {
       this.hideProcessingOverlay();
       this.showToast("Could not process invoice: " + err.message, "error");
@@ -616,14 +616,14 @@ class AuditItApp {
 
   async handleRefreshTaxAi() {
     if (!this.taxData) return;
-    this.showToast("Invoking Gemini 2.5 Flash for tax preparation suggestions...", "info");
+    this.showToast("Invoking Gemini 3.1 Pro for tax preparation suggestions...", "info");
     
     const { audit_summary, calculated_tax } = this.taxData;
     const ai_suggestions = await generate_tax_suggestions(audit_summary, calculated_tax, this.apiKey);
     this.taxData.ai_suggestions = ai_suggestions;
     
     this.render();
-    this.showToast(ai_suggestions.isAiGenerated ? "Updated via Gemini 2.5 Flash!" : "Tax suggestions refreshed", "success");
+    this.showToast(ai_suggestions.isAiGenerated ? "Updated via Gemini 3.1 Pro!" : "Tax suggestions refreshed", "success");
   }
 
   handleCopyDiscrepancyNote(openWhatsApp = false) {

@@ -136,7 +136,7 @@ async def call_gemini_rest(
         }
     }
 
-    models_to_try = ["gemini-2.5-flash", "gemini-3.8-flash", "gemini-3.5-flash"]
+    models_to_try = ["gemini-3.1-pro"]
     last_err = None
 
     for model_name in models_to_try:
@@ -215,6 +215,9 @@ async def analyze_bill(
     # Strict prompt with Indian GST invoice extraction rules
     # Includes: Anti-Hallucination, Hidden Charges, Multi-Slab GST, UoM/Multiplier, Privacy Masking
     prompt = """You are a strict GST Invoice extractor.
+
+STRICT DOCUMENT GROUNDING (MANDATORY):
+Base your answers EXCLUSIVELY and strictly on the uploaded documents. If any digit, text, or data is missing, illegible, or uncertain, state that it cannot be found or return "UNREADABLE". Do NOT infer, estimate, or hallucinate any financial details not present in the text.
 
 ANTI-HALLUCINATION RULE (MANDATORY):
 - If ANY digit, text, GSTIN, HSN code, or number on the invoice is blurry, obscured, smudged, cut off, or otherwise unreadable, you MUST return the exact string "UNREADABLE" for that specific field value.
@@ -324,7 +327,7 @@ Extract the invoice details into JSON matching this exact schema:
         if not api_key.startswith("AQ."):
             genai_client = get_genai_client(api_key)
             if genai_client:
-                for model_name in ['gemini-2.5-flash', 'gemini-3.8-flash', 'gemini-3.5-flash']:
+                for model_name in ['gemini-3.1-pro']:
                     try:
                         response = genai_client.models.generate_content(
                             model=model_name,
@@ -411,7 +414,7 @@ def run(port: int = 3000):
     print("\n" + "="*56)
     print("  🚀 AUDIT IT - FastAPI + Google GenAI Server")
     print(f"  Serving on: http://localhost:{port}")
-    print(f"  Model:      gemini-2.5-flash / gemini-3.5-flash")
+    print(f"  Model:      gemini-3.1-pro")
     print(f"  Root Dir:   {SCRIPT_DIR}")
     print("="*56 + "\n")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="info")
