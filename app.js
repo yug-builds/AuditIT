@@ -50,10 +50,10 @@ class AuditItApp {
       grossOutputGst: 50000
     };
     this.isProcessing = false;
-    const API_KEY = process.env.GEMINI_API_KEY || "";
-    this.apiKey = localStorage.getItem("audit_it_gemini_api_key") || defaultKey;
+    const API_KEY = localStorage.getItem("GEMINI_API_KEY") || "";
+    this.apiKey = localStorage.getItem("audit_it_gemini_api_key") || API_KEY;
     if (!localStorage.getItem("audit_it_gemini_api_key")) {
-      try { localStorage.setItem("audit_it_gemini_api_key", defaultKey); } catch (_) {}
+      try { localStorage.setItem("audit_it_gemini_api_key", API_KEY); } catch (_) {}
     }
 
     // Load persistent Tax Ledger bills

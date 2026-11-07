@@ -5,7 +5,7 @@ import { sanitizeInvoiceData } from "./privacyMasker.js";
 import { parseInvoiceText, isLikelyInvoice } from "./invoiceTextParser.js";
 import { cleanExtractedItems, sanitizeAndCleanInvoice } from "./itemCleaner.js";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
+const apiKey = localStorage.getItem("GEMINI_API_KEY") || "";
 
 
 const GEMINI_SYSTEM_INSTRUCTION = `You are a strict GST Invoice extractor. 

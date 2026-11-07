@@ -1,7 +1,7 @@
 // Gemini 3.1 Pro Tax Suggestions Generator for AUDIT IT
 import { formatRupees } from "./auditEngine.js";
 
-const apiKey = process.env.GEMINI_API_KEY || "";
+const apiKey = localStorage.getItem("GEMINI_API_KEY") || "";
 
 
 /**
