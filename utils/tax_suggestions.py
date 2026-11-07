@@ -93,13 +93,13 @@ Tone: Grounded, simple English, no complex jargon. Include a clear disclaimer: '
         cleaned_key = api_key.strip()
         is_bearer = cleaned_key.startswith("AQ.")
         if is_bearer:
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent"
             req_headers = {
                 "Authorization": f"Bearer {cleaned_key}",
                 "Content-Type": "application/json"
             }
         else:
-            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+            url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro:generateContent"
             req_headers = {
                 "x-goog-api-key": cleaned_key,
                 "Content-Type": "application/json"

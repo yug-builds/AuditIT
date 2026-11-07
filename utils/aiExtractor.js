@@ -5,7 +5,8 @@ import { sanitizeInvoiceData } from "./privacyMasker.js";
 import { parseInvoiceText, isLikelyInvoice } from "./invoiceTextParser.js";
 import { cleanExtractedItems, sanitizeAndCleanInvoice } from "./itemCleaner.js";
 
-const apiKey = localStorage.getItem("GEMINI_API_KEY") || "";
+const API_KEY = localStorage.getItem('GEMINI_API_KEY') || "";
+const DEFAULT_API_KEY = API_KEY;
 
 
 const GEMINI_SYSTEM_INSTRUCTION = `You are a strict GST Invoice extractor. 
@@ -104,7 +105,7 @@ Return ONLY a valid JSON object matching this schema:
  * 4. Document-aware parser (zero fake/mock items)
  */
 export async function extractInvoiceFromDocument(file, apiKey = null, onProgress = null) {
-  const effectiveKey = (apiKey && apiKey.trim().length > 10) ? apiKey.trim() : DEFAULT_API_KEY;
+  const effectiveKey = (apiKey && apiKey.trim().length > 10) ? apiKey.trim() : API_KEY;
   const mimeType = file.type || "image/jpeg";
   const objectUrl = URL.createObjectURL(file);
 

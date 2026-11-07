@@ -1,7 +1,8 @@
 // Gemini 3.1 Pro Tax Suggestions Generator for AUDIT IT
 import { formatRupees } from "./auditEngine.js";
 
-const apiKey = localStorage.getItem("GEMINI_API_KEY") || "";
+const API_KEY = localStorage.getItem('GEMINI_API_KEY') || "";
+const DEFAULT_API_KEY = API_KEY;
 
 
 /**
@@ -13,7 +14,7 @@ const apiKey = localStorage.getItem("GEMINI_API_KEY") || "";
  * @returns {Promise<{ suggestions: string[], disclaimer: string, isAiGenerated: boolean }>}
  */
 export async function generate_tax_suggestions(audit_summary, calculated_tax, apiKey = null) {
-  const effectiveKey = (apiKey && apiKey.trim().length > 10) ? apiKey.trim() : DEFAULT_API_KEY;
+  const effectiveKey = (apiKey && apiKey.trim().length > 10) ? apiKey.trim() : API_KEY;
 
   if (!audit_summary || !calculated_tax) {
     return {
